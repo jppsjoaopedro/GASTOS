@@ -36,13 +36,38 @@
   .hint{color:#666;font-size:13px;text-align:center;margin:8px 0}
   .banner{background:#fff3cd;color:#664d03;font-size:13px;padding:6px 12px;text-align:center}
   small.lbl{display:block;color:#666;font-size:11px}
+  .userbar{font-size:12px;margin-top:6px;opacity:.9}
+  .userbar button{background:transparent;color:#fff;border:1px solid #fff;border-radius:4px;margin-left:6px;cursor:pointer;font-size:12px}
+  #login{position:fixed;inset:0;background:#1f3864;display:none;align-items:center;justify-content:center;z-index:10;padding:16px}
+  #login .box{background:#fff;border-radius:12px;padding:28px 24px;max-width:340px;width:100%;text-align:center}
+  #login h2{margin:0 0 6px} #login p{color:#555;font-size:14px}
+  #loginMsg{color:#b00020;font-size:13px;margin-top:12px}
+  .toolbar{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:14px}
+  .printtitle{display:none}
+  @media print{
+    body{background:#fff}
+    .tabs,.toolbar,.month button,.userbar,#banner,.chartbox{display:none!important}
+    .printtitle{display:block;text-align:center;font-weight:bold;font-size:18px;margin-bottom:10px}
+    main{padding:0;max-width:none;min-height:0}
+    header{background:#fff!important;color:#000;padding:4px}
+    header h1{display:none}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
   @media(max-width:480px){.add{grid-template-columns:1fr 1fr 1fr;} .add input:first-child{grid-column:1/-1} .add button{height:34px}}
 </style>
 </head>
 <body>
 <div id="banner"></div>
+<div id="login"><div class="box">
+  <h2>💳 Controle de Gastos</h2>
+  <p>Entre com a sua conta Google para acessar.</p>
+  <button class="btn" id="btnGoogle" style="font-size:16px;padding:10px 18px">Entrar com Google</button>
+  <button class="btn" id="btnOut" style="display:none;background:#777;margin-top:10px">Sair desta conta</button>
+  <div id="loginMsg"></div>
+</div></div>
 <header>
   <h1>💳 Controle de Gastos da Casa</h1>
+  <div class="userbar" id="userbar"></div>
   <div class="month"><button id="prev">‹</button><span id="mlabel"></span><button id="next">›</button></div>
 </header>
 <div class="tabs" id="tabs"></div>
@@ -50,19 +75,20 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <input type="file" id="fileImp" accept=".xlsx,.xls,.csv" hidden>
 <script>
 /* ============ CONFIGURAÇÃO ============
    Para todos acessarem os mesmos dados, cole aqui a config do Firebase (grátis).
    Deixe vazio para usar só neste navegador (modo teste). */
-const FIREBASE_CONFIG = {apiKey: "AIzaSyBnXPJ8v2mtY3qrz1Jij_YZM60j7ngs6Qc",
-  authDomain: "gastos-mensais-853b6.firebaseapp.com",
-  projectId: "gastos-mensais-853b6",
-  storageBucket: "gastos-mensais-853b6.firebasestorage.app",
-  messagingSenderId: "926601429297",
-  appId: "1:926601429297:web:ad64d239e93dcdf2ffb010",
-  measurementId: "G-CHKG4PY4FE"};
+const FIREBASE_CONFIG = {
+  apiKey: "AIza...",
+  authDomain: "gastos-casa.firebaseapp.com",
+  projectId: "gastos-casa",
+  storageBucket: "gastos-casa.appspot.com",
+  messagingSenderId: "123456",
+  appId: "1:123456:web:abc"};
 /* ====================================== */
 
 const USE_FB = !!FIREBASE_CONFIG.projectId;
@@ -76,7 +102,7 @@ if (USE_FB) {
   firebase.initializeApp(FIREBASE_CONFIG);
   const db = firebase.firestore();
   store = {
-    subscribe:(c,cb)=>db.collection(c).onSnapshot(s=>cb(s.docs.map(d=>({id:d.id,...d.data()})))),
+    subscribe:(c,cb,err)=>db.collection(c).onSnapshot(s=>cb(s.docs.map(d=>({id:d.id,...d.data()}))),err),
     add:async(c,o)=>(await db.collection(c).add(o)).id,
     set:(c,id,o)=>db.collection(c).doc(id).set(o),
     remove:(c,id)=>db.collection(c).doc(id).delete()
@@ -95,11 +121,49 @@ if (USE_FB) {
 }
 
 /* ---------- estado ---------- */
+let editMode=false;
 let people=[], purchases=[], curTab=localStorage.getItem('gastos_tab')||'house';
 const now=new Date(); let mi=now.getFullYear()*12+now.getMonth();
 
-store.subscribe('people',a=>{people=a.sort((x,y)=>x.name.localeCompare(y.name));render()});
-store.subscribe('purchases',a=>{purchases=a;render()});
+/* ---------- login e início ---------- */
+let unsubs=[];
+const auth=USE_FB?firebase.auth():null;
+function showLogin(msg,denied){
+  document.getElementById('login').style.display='flex';
+  document.getElementById('loginMsg').textContent=msg||'';
+  document.getElementById('btnGoogle').style.display=denied?'none':'';
+  document.getElementById('btnOut').style.display=denied?'':'none';
+}
+function onDenied(e){
+  if(e&&e.code==='permission-denied')
+    showLogin('O e-mail '+(auth.currentUser?auth.currentUser.email:'')+' não tem permissão. Peça ao administrador para liberá-lo ou entre com outra conta.',true);
+}
+function startApp(){
+  unsubs.push(store.subscribe('people',a=>{people=a.sort((x,y)=>x.name.localeCompare(y.name));render()},onDenied));
+  unsubs.push(store.subscribe('purchases',a=>{purchases=a;render()},onDenied));
+}
+if(USE_FB){
+  document.getElementById('btnGoogle').onclick=async()=>{
+    const prov=new firebase.auth.GoogleAuthProvider();
+    try{ await auth.signInWithPopup(prov); }
+    catch(e){
+      if(e.code==='auth/popup-blocked'||e.code==='auth/cancelled-popup-request') auth.signInWithRedirect(prov);
+      else if(e.code==='auth/unauthorized-domain') showLogin('Domínio não autorizado no Firebase (Authentication → Configurações → Domínios autorizados).');
+      else if(e.code!=='auth/popup-closed-by-user') showLogin('Erro ao entrar: '+e.code);
+    }
+  };
+  document.getElementById('btnOut').onclick=()=>auth.signOut();
+  auth.onAuthStateChanged(u=>{
+    unsubs.forEach(f=>f&&f()); unsubs=[]; people=[]; purchases=[]; render();
+    const bar=document.getElementById('userbar');
+    if(u){
+      document.getElementById('login').style.display='none';
+      bar.innerHTML=esc(u.email)+' <button id="logout">Sair</button>';
+      document.getElementById('logout').onclick=()=>auth.signOut();
+      startApp();
+    } else { bar.innerHTML=''; showLogin(); }
+  });
+} else startApp();
 
 /* ---------- lógica ---------- */
 function parcelaNoMes(p,m=mi){
@@ -124,7 +188,7 @@ function chart(pid){
       <text x="${x+bw/2}" y="${y-4}" font-size="10" text-anchor="middle" fill="#333">${Math.round(v.t)}</text>
       <text x="${x+bw/2}" y="168" font-size="11" text-anchor="middle" fill="#333">${MESES[((v.m%12)+12)%12].slice(0,3)}</text>`;
   }).join('');
-  return `<div class="card" style="margin-top:20px"><h2 style="background:#d9e2f3">EVOLUÇÃO (5 meses atrás → 6 à frente, em R$)</h2>
+  return `<div class="card chartbox" style="margin-top:20px"><h2 style="background:#d9e2f3">EVOLUÇÃO (5 meses atrás → 6 à frente, em R$)</h2>
     <svg viewBox="0 0 600 180" style="width:100%;display:block">${bars}</svg></div>`;
 }
 
@@ -163,6 +227,28 @@ async function importar(file){
   alert('Importação concluída!');
 }
 
+/* ---------- exportar mês (Excel) ---------- */
+function exportXlsx(){
+  const person=people.find(p=>p.id===curTab); if(!person) return;
+  const mes=MESES[mi%12]+' '+Math.floor(mi/12);
+  const aoa=[[`${person.name} - ${mes}`],[]], money=[];
+  (person.cards||[]).forEach(c=>{
+    const items=doMes(person.id,c.name);
+    aoa.push([c.day?`${c.name} (DIA ${c.day})`:c.name]);
+    aoa.push(['Descrição','Parcela','Valor']);
+    items.forEach(p=>{aoa.push([p.desc,parcelaNoMes(p),p.value]);money.push(aoa.length-1)});
+    aoa.push([`TOTAL ${c.name}`,'',soma(items)]);money.push(aoa.length-1);
+    aoa.push([]);
+  });
+  aoa.push(['TOTAL MENSAL','',soma(doMes(person.id))]);money.push(aoa.length-1);
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols']=[{wch:32},{wch:10},{wch:14}];
+  money.forEach(r=>{const cell=ws['C'+(r+1)]; if(cell) cell.z='"R$" #,##0.00'});
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Gastos');
+  const nome=`Gastos_${person.name}_${mes}.xlsx`.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\w.-]+/g,'_');
+  XLSX.writeFile(wb,nome);
+}
+
 /* ---------- render ---------- */
 function render(){
   document.getElementById('mlabel').textContent=MESES[mi%12]+' '+Math.floor(mi/12);
@@ -186,26 +272,32 @@ function renderHouse(){
 
 function renderPerson(person){
   const cards=person.cards||[];
-  let html='';
+  let html=`<div class="printtitle">${esc(person.name)} — ${MESES[mi%12]} ${Math.floor(mi/12)}</div>
+    <div class="toolbar">
+      <button class="btn" data-toggleedit>${editMode?'✔ Concluir edição':'✏️ Editar'}</button>
+      ${editMode?'<button class="btn" data-renameperson>✎ Nome da pessoa</button><button class="btn" style="background:#b00020" data-delperson>🗑 Excluir pessoa</button>':''}
+      <button class="btn" data-xlsx>⬇ Baixar Excel</button>
+      <button class="btn" data-print>🖨 PDF / Imprimir</button>
+    </div>`;
   cards.forEach(c=>{
     const items=doMes(person.id,c.name);
     const rows=items.map(p=>`<tr><td>${esc(p.desc)}</td><td class="c">${parcelaNoMes(p)}</td><td class="v">${brl(p.value)}</td>
-      <td class="x"><button title="Editar" style="color:#1f3864" data-edit="${p.id}">✎</button><button title="Excluir compra" data-del="${p.id}">✕</button></td></tr>`).join('')
+      ${editMode?`<td class="x"><button title="Editar" style="color:#1f3864" data-edit="${p.id}">✎</button><button title="Excluir compra" data-del="${p.id}">✕</button></td>`:''}</tr>`).join('')
       ||`<tr><td colspan="3" style="text-align:center;color:#888">Sem compras neste mês</td></tr>`;
     html+=`<div class="card" data-card="${esc(c.name)}">
-      <h2>${esc(c.name.toUpperCase())}${c.day?` (DIA ${c.day})`:''}<button title="Remover cartão" data-delcard="${esc(c.name)}">🗑</button></h2>
-      <table><tr><th>Descrição</th><th>Parcela</th><th>Valor</th><th style="border:0;background:#fff"></th></tr>${rows}</table>
+      <h2>${esc(c.name.toUpperCase())}${c.day?` (DIA ${c.day})`:''}${editMode?`<button title="Remover cartão" data-delcard="${esc(c.name)}">🗑</button>`:''}</h2>
+      <table><tr><th>Descrição</th><th>Parcela</th><th>Valor</th>${editMode?'<th style="border:0;background:#fff"></th>':''}</tr>${rows}</table>
       <div class="tot"><span class="l">TOTAL ${esc(c.name.toUpperCase())}</span><span class="r">${brl(soma(items))}</span></div>
-      <form class="add" data-add="${esc(c.name)}">
+      ${editMode?`<form class="add" data-add="${esc(c.name)}">
         <input name="desc" placeholder="Descrição (ex: Celular)" required>
         <input name="parc" type="number" min="1" value="1" title="Parcela atual neste mês">
         <input name="total" type="number" min="1" value="1" title="Total de parcelas">
         <input name="value" placeholder="Valor" inputmode="decimal" required>
         <button>＋</button>
-      </form></div>`;
+      </form>`:''}</div>`;
   });
-  html+=`<div style="text-align:center;margin-bottom:16px"><button class="btn" id="addCard">＋ Adicionar cartão</button> <button class="btn" data-imp>📥 Importar planilha</button></div>`;
-  html+=`<p class="hint">No formulário: <b>parcela atual</b> deste mês / <b>total</b> de parcelas. Compra à vista = 1 e 1.<br>Parceladas aparecem sozinhas nos meses seguintes.</p>`;
+  if(editMode) html+=`<div style="text-align:center;margin-bottom:16px"><button class="btn" id="addCard">＋ Adicionar cartão</button> <button class="btn" data-imp>📥 Importar planilha</button></div>`;
+  if(editMode) html+=`<p class="hint">No formulário: <b>parcela atual</b> deste mês / <b>total</b> de parcelas. Compra à vista = 1 e 1.<br>Parceladas aparecem sozinhas nos meses seguintes.</p>`;
   html+=`<div class="grand"><span class="l">TOTAL MENSAL</span><span class="r">${brl(soma(doMes(person.id)))}</span></div>`;
   html+=chart(person.id);
   return html;
@@ -217,7 +309,7 @@ document.getElementById('next').onclick=()=>{mi++;render()};
 
 document.addEventListener('click',async e=>{
   const t=e.target;
-  if(t.dataset.tab){curTab=t.dataset.tab;localStorage.setItem('gastos_tab',curTab);render();}
+  if(t.dataset.tab){editMode=false;curTab=t.dataset.tab;localStorage.setItem('gastos_tab',curTab);render();}
   if(t.id==='addPerson'){
     const name=(prompt('Nome da pessoa:')||'').trim(); if(!name) return;
     await store.add('people',{name,cards:[]});
@@ -237,6 +329,21 @@ document.addEventListener('click',async e=>{
   }
   if(t.dataset.del){
     if(confirm('Excluir esta compra (todas as parcelas)?')) store.remove('purchases',t.dataset.del);
+  }
+  if(t.dataset.toggleedit!==undefined){editMode=!editMode;render();}
+  if(t.dataset.xlsx!==undefined) exportXlsx();
+  if(t.dataset.print!==undefined) window.print();
+  if(t.dataset.renameperson!==undefined){
+    const person=people.find(p=>p.id===curTab); if(!person) return;
+    const name=(prompt('Novo nome:',person.name)||'').trim();
+    if(name&&name!==person.name) await store.set('people',person.id,{...person,name});
+  }
+  if(t.dataset.delperson!==undefined){
+    const person=people.find(p=>p.id===curTab); if(!person) return;
+    if(!confirm(`Excluir "${person.name}" e TODAS as compras dela?`)) return;
+    await Promise.all(purchases.filter(p=>p.personId===person.id).map(p=>store.remove('purchases',p.id)));
+    await store.remove('people',person.id);
+    curTab='house'; editMode=false; render();
   }
   if(t.dataset.imp!==undefined) document.getElementById('fileImp').click();
   if(t.dataset.edit){
