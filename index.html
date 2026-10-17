@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Controle de Gastos</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:Calibri,Arial,sans-serif;background:#f3f4f6;margin:0;color:#111}
+  header{background:#1f3864;color:#fff;padding:14px 16px;text-align:center}
+  header h1{margin:0;font-size:20px}
+  .month{display:flex;justify-content:center;align-items:center;gap:14px;margin-top:8px;font-size:18px;font-weight:bold}
+  .month button{background:#fff;border:0;border-radius:6px;font-size:18px;width:36px;height:32px;cursor:pointer}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;padding:12px 16px 0;max-width:640px;margin:auto}
+  .tab{border:0;background:#d9dde6;padding:8px 14px;border-radius:8px 8px 0 0;cursor:pointer;font-size:15px}
+  .tab.on{background:#fff;font-weight:bold}
+  main{max-width:640px;margin:auto;background:#fff;padding:14px 16px 30px;min-height:60vh}
+  .card{margin-bottom:22px;border:1px solid #000}
+  .card h2{margin:0;background:#ffff00;text-align:center;font-size:16px;padding:5px;border-bottom:1px solid #000;position:relative}
+  .card h2 button{position:absolute;right:6px;top:3px;border:0;background:transparent;cursor:pointer;font-size:14px}
+  table{width:100%;border-collapse:collapse;font-size:15px}
+  th{background:#d9d9d9;border:1px solid #000;padding:4px}
+  td{border:1px solid #999;padding:4px 6px}
+  td.c{text-align:center;width:70px} td.v{text-align:right;width:100px;white-space:nowrap}
+  td.x{width:56px;white-space:nowrap;text-align:center;border:0;padding:0}
+  td.x button{border:0;background:transparent;color:#c00;cursor:pointer;font-size:16px}
+  .tot{display:flex;border-top:1px solid #000;background:#d9d9d9;font-weight:bold}
+  .tot span{padding:5px 8px} .tot .l{flex:1;text-align:center}
+  .tot .r{background:#e00000;color:#fff;width:130px;text-align:center;border-left:1px solid #000}
+  .add{display:grid;grid-template-columns:1fr 54px 54px 90px 38px;gap:4px;padding:6px;background:#fafafa;border-top:1px dashed #999}
+  .add input{padding:6px;border:1px solid #bbb;border-radius:4px;min-width:0;font-size:14px}
+  .add button{background:#1f3864;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:18px}
+  .grand{background:#1f3864;color:#fff;display:flex;font-weight:bold;font-size:17px;border:1px solid #000}
+  .grand span{padding:8px} .grand .l{flex:1;text-align:center} .grand .r{width:130px;text-align:center;background:#c00000}
+  .btn{background:#1f3864;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:14px}
+  .hint{color:#666;font-size:13px;text-align:center;margin:8px 0}
+  .banner{background:#fff3cd;color:#664d03;font-size:13px;padding:6px 12px;text-align:center}
+  small.lbl{display:block;color:#666;font-size:11px}
+  @media(max-width:480px){.add{grid-template-columns:1fr 1fr 1fr;} .add input:first-child{grid-column:1/-1} .add button{height:34px}}
+</style>
+</head>
+<body>
+<div id="banner"></div>
+<header>
+  <h1>💳 Controle de Gastos da Casa</h1>
+  <div class="month"><button id="prev">‹</button><span id="mlabel"></span><button id="next">›</button></div>
+</header>
+<div class="tabs" id="tabs"></div>
+<main id="main"></main>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<input type="file" id="fileImp" accept=".xlsx,.xls,.csv" hidden>
+<script>
+/* ============ CONFIGURAÇÃO ============
+   Para todos acessarem os mesmos dados, cole aqui a config do Firebase (grátis).
+   Deixe vazio para usar só neste navegador (modo teste). */
+const FIREBASE_CONFIG = {apiKey: "AIzaSyBnXPJ8v2mtY3qrz1Jij_YZM60j7ngs6Qc",
+  authDomain: "gastos-mensais-853b6.firebaseapp.com",
+  projectId: "gastos-mensais-853b6",
+  storageBucket: "gastos-mensais-853b6.firebasestorage.app",
+  messagingSenderId: "926601429297",
+  appId: "1:926601429297:web:ad64d239e93dcdf2ffb010",
+  measurementId: "G-CHKG4PY4FE"};
+/* ====================================== */
+
+const USE_FB = !!FIREBASE_CONFIG.projectId;
+const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const brl = n => n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const esc = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ---------- camada de dados ---------- */
+let store;
+if (USE_FB) {
+  firebase.initializeApp(FIREBASE_CONFIG);
+  const db = firebase.firestore();
+  store = {
+    subscribe:(c,cb)=>db.collection(c).onSnapshot(s=>cb(s.docs.map(d=>({id:d.id,...d.data()})))),
+    add:async(c,o)=>(await db.collection(c).add(o)).id,
+    set:(c,id,o)=>db.collection(c).doc(id).set(o),
+    remove:(c,id)=>db.collection(c).doc(id).delete()
+  };
+} else {
+  const L = {};
+  const load=c=>JSON.parse(localStorage.getItem('gastos_'+c)||'[]');
+  const save=(c,a)=>{localStorage.setItem('gastos_'+c,JSON.stringify(a));(L[c]||[]).forEach(f=>f(a))};
+  store = {
+    subscribe:(c,cb)=>{(L[c]=L[c]||[]).push(cb);cb(load(c))},
+    add:async(c,o)=>{const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6);save(c,[...load(c),{...o,id}]);return id},
+    set:async(c,id,o)=>save(c,load(c).map(x=>x.id===id?{...o,id}:x)),
+    remove:async(c,id)=>save(c,load(c).filter(x=>x.id!==id))
+  };
+  document.getElementById('banner').innerHTML='<div class="banner">Modo teste: os dados ficam só neste navegador. Configure o Firebase para compartilhar com a família.</div>';
+}
+
+/* ---------- estado ---------- */
+let people=[], purchases=[], curTab=localStorage.getItem('gastos_tab')||'house';
+const now=new Date(); let mi=now.getFullYear()*12+now.getMonth();
+
+store.subscribe('people',a=>{people=a.sort((x,y)=>x.name.localeCompare(y.name));render()});
+store.subscribe('purchases',a=>{purchases=a;render()});
+
+/* ---------- lógica ---------- */
+function parcelaNoMes(p,m=mi){
+  const parc=p.startParcel+(m-p.startIdx);
+  if(parc<1||parc>p.total) return null;
+  return p.total>1?`${parc}/${p.total}`:'-';
+}
+const doMes=(pid,card)=>purchases.filter(p=>p.personId===pid&&(card==null||p.card===card)&&parcelaNoMes(p)!==null);
+const soma=l=>l.reduce((s,p)=>s+p.value,0);
+
+/* ---------- gráfico ---------- */
+function chart(pid){
+  const vals=[];
+  for(let m=mi-5;m<=mi+6;m++){
+    vals.push({m,t:purchases.filter(p=>(pid==null||p.personId===pid)&&parcelaNoMes(p,m)!==null).reduce((s,p)=>s+p.value,0)});
+  }
+  const max=Math.max(1,...vals.map(v=>v.t)), bw=36, gap=(600-12*bw)/13;
+  const bars=vals.map((v,i)=>{
+    const x=gap+i*(bw+gap), h=v.t/max*120, y=150-h;
+    const fill=v.m===mi?'#c00000':(v.m<mi?'#8ea9db':'#b4c7e7');
+    return `<rect x="${x}" y="${y}" width="${bw}" height="${h}" fill="${fill}"/>
+      <text x="${x+bw/2}" y="${y-4}" font-size="10" text-anchor="middle" fill="#333">${Math.round(v.t)}</text>
+      <text x="${x+bw/2}" y="168" font-size="11" text-anchor="middle" fill="#333">${MESES[((v.m%12)+12)%12].slice(0,3)}</text>`;
+  }).join('');
+  return `<div class="card" style="margin-top:20px"><h2 style="background:#d9e2f3">EVOLUÇÃO (5 meses atrás → 6 à frente, em R$)</h2>
+    <svg viewBox="0 0 600 180" style="width:100%;display:block">${bars}</svg></div>`;
+}
+
+/* ---------- importar planilha ---------- */
+const cap=s=>s.toLowerCase().replace(/(^|\s)\S/g,c=>c.toUpperCase());
+async function importar(file){
+  const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''});
+  const num=x=>typeof x==='number'?x:parseFloat(String(x).replace(/[^\d,.-]/g,'').replace(/\./g,'').replace(',','.'));
+  let pname=null,card=null; const cards=[],items=[];
+  for(const r of rows){
+    const a=String(r[0]).trim(); if(!a) continue;
+    const h=a.match(/^(.*?)\s*\(\s*DIA\s*(\d+)\s*\)/i);
+    if(h){card=cap(h[1].trim());cards.push({name:card,day:+h[2]});continue}
+    if(/^(total|descri)/i.test(a)) continue;
+    if(!card){ if(!pname) pname=cap(a.split(/\s+-\s+/)[0].trim()); continue }
+    const v=num(r[2]); if(isNaN(v)||v<=0) continue;
+    const m=String(r[1]).match(/(\d+)\s*\/\s*(\d+)/);
+    const total=m?+m[2]:1;
+    items.push({card,desc:a===a.toUpperCase()?cap(a):a,value:v,total,startParcel:m?Math.min(+m[1],total):1});
+  }
+  if(!cards.length||!items.length) throw new Error('não encontrei cartões/compras no formato esperado');
+  let person=people.find(p=>p.name.toLowerCase()===(pname||'').toLowerCase());
+  if(!person&&!pname) person=people.find(p=>p.id===curTab);
+  const target=person?person.name:(pname||'Importado');
+  if(!confirm(`Importar ${items.length} compras em ${cards.length} cartões para "${target}", no mês ${MESES[mi%12]} ${Math.floor(mi/12)}?\n(As parcelas serão consideradas como as deste mês.)`)) return;
+  let pid, merged=person?[...(person.cards||[])]:[];
+  cards.forEach(c=>{const k=merged.find(x=>x.name.toLowerCase()===c.name.toLowerCase()); if(!k) merged.push(c);});
+  if(person){pid=person.id; await store.set('people',pid,{name:target,cards:merged});}
+  else pid=await store.add('people',{name:target,cards:merged});
+  for(const it of items){
+    const real=merged.find(x=>x.name.toLowerCase()===it.card.toLowerCase()).name;
+    await store.add('purchases',{personId:pid,card:real,desc:it.desc,value:it.value,total:it.total,startParcel:it.startParcel,startIdx:mi});
+  }
+  curTab=pid; localStorage.setItem('gastos_tab',pid); render();
+  alert('Importação concluída!');
+}
+
+/* ---------- render ---------- */
+function render(){
+  document.getElementById('mlabel').textContent=MESES[mi%12]+' '+Math.floor(mi/12);
+  const tabs=document.getElementById('tabs');
+  tabs.innerHTML=`<button class="tab ${curTab==='house'?'on':''}" data-tab="house">🏠 Resumo</button>`+
+    people.map(p=>`<button class="tab ${curTab===p.id?'on':''}" data-tab="${p.id}">${esc(p.name)}</button>`).join('')+
+    `<button class="tab" id="addPerson">＋ Pessoa</button>`;
+  const main=document.getElementById('main');
+  if(curTab==='house'||!people.find(p=>p.id===curTab)){ main.innerHTML=renderHouse(); return; }
+  main.innerHTML=renderPerson(people.find(p=>p.id===curTab));
+}
+
+function renderHouse(){
+  if(!people.length) return '<p class="hint">Nenhuma pessoa ainda. Clique em “＋ Pessoa” para começar ou importe sua planilha.</p><div style="text-align:center"><button class="btn" data-imp>📥 Importar planilha</button></div>';
+  const rows=people.map(p=>`<tr><td>${esc(p.name)}</td><td class="v">${brl(soma(doMes(p.id)))}</td></tr>`).join('');
+  const total=soma(purchases.filter(p=>parcelaNoMes(p)!==null));
+  return `<div class="card"><h2>RESUMO DA CASA</h2><table><tr><th>Pessoa</th><th>Total do mês</th></tr>${rows}</table>
+    <div class="grand"><span class="l">TOTAL DA CASA</span><span class="r">${brl(total)}</span></div></div>`
+    +chart(null)+`<div style="text-align:center;margin-top:14px"><button class="btn" data-imp>📥 Importar planilha</button></div>`;
+}
+
+function renderPerson(person){
+  const cards=person.cards||[];
+  let html='';
+  cards.forEach(c=>{
+    const items=doMes(person.id,c.name);
+    const rows=items.map(p=>`<tr><td>${esc(p.desc)}</td><td class="c">${parcelaNoMes(p)}</td><td class="v">${brl(p.value)}</td>
+      <td class="x"><button title="Editar" style="color:#1f3864" data-edit="${p.id}">✎</button><button title="Excluir compra" data-del="${p.id}">✕</button></td></tr>`).join('')
+      ||`<tr><td colspan="3" style="text-align:center;color:#888">Sem compras neste mês</td></tr>`;
+    html+=`<div class="card" data-card="${esc(c.name)}">
+      <h2>${esc(c.name.toUpperCase())}${c.day?` (DIA ${c.day})`:''}<button title="Remover cartão" data-delcard="${esc(c.name)}">🗑</button></h2>
+      <table><tr><th>Descrição</th><th>Parcela</th><th>Valor</th><th style="border:0;background:#fff"></th></tr>${rows}</table>
+      <div class="tot"><span class="l">TOTAL ${esc(c.name.toUpperCase())}</span><span class="r">${brl(soma(items))}</span></div>
+      <form class="add" data-add="${esc(c.name)}">
+        <input name="desc" placeholder="Descrição (ex: Celular)" required>
+        <input name="parc" type="number" min="1" value="1" title="Parcela atual neste mês">
+        <input name="total" type="number" min="1" value="1" title="Total de parcelas">
+        <input name="value" placeholder="Valor" inputmode="decimal" required>
+        <button>＋</button>
+      </form></div>`;
+  });
+  html+=`<div style="text-align:center;margin-bottom:16px"><button class="btn" id="addCard">＋ Adicionar cartão</button> <button class="btn" data-imp>📥 Importar planilha</button></div>`;
+  html+=`<p class="hint">No formulário: <b>parcela atual</b> deste mês / <b>total</b> de parcelas. Compra à vista = 1 e 1.<br>Parceladas aparecem sozinhas nos meses seguintes.</p>`;
+  html+=`<div class="grand"><span class="l">TOTAL MENSAL</span><span class="r">${brl(soma(doMes(person.id)))}</span></div>`;
+  html+=chart(person.id);
+  return html;
+}
+
+/* ---------- eventos ---------- */
+document.getElementById('prev').onclick=()=>{mi--;render()};
+document.getElementById('next').onclick=()=>{mi++;render()};
+
+document.addEventListener('click',async e=>{
+  const t=e.target;
+  if(t.dataset.tab){curTab=t.dataset.tab;localStorage.setItem('gastos_tab',curTab);render();}
+  if(t.id==='addPerson'){
+    const name=(prompt('Nome da pessoa:')||'').trim(); if(!name) return;
+    await store.add('people',{name,cards:[]});
+  }
+  if(t.id==='addCard'){
+    const person=people.find(p=>p.id===curTab);
+    const name=(prompt('Nome do cartão (ex: Nubank):')||'').trim(); if(!name) return;
+    if((person.cards||[]).some(c=>c.name.toLowerCase()===name.toLowerCase())) return alert('Esse cartão já existe.');
+    const day=parseInt(prompt('Dia do vencimento (opcional):')||'')||null;
+    await store.set('people',person.id,{name:person.name,cards:[...(person.cards||[]),{name,day}]});
+  }
+  if(t.dataset.delcard){
+    if(!confirm('Remover o cartão e TODAS as compras dele?')) return;
+    const person=people.find(p=>p.id===curTab);
+    await Promise.all(purchases.filter(p=>p.personId===person.id&&p.card===t.dataset.delcard).map(p=>store.remove('purchases',p.id)));
+    await store.set('people',person.id,{name:person.name,cards:person.cards.filter(c=>c.name!==t.dataset.delcard)});
+  }
+  if(t.dataset.del){
+    if(confirm('Excluir esta compra (todas as parcelas)?')) store.remove('purchases',t.dataset.del);
+  }
+  if(t.dataset.imp!==undefined) document.getElementById('fileImp').click();
+  if(t.dataset.edit){
+    const p=purchases.find(x=>x.id===t.dataset.edit); if(!p) return;
+    const desc=prompt('Descrição:',p.desc); if(desc===null) return;
+    const val=prompt('Valor da parcela:',String(p.value).replace('.',',')); if(val===null) return;
+    const cur=parcelaNoMes(p); const [pc,tt]=cur==='-'?['1','1']:cur.split('/');
+    const np=prompt('Parcela deste mês:',pc); if(np===null) return;
+    const nt=prompt('Total de parcelas:',tt); if(nt===null) return;
+    const v=parseFloat(val.replace(/\./g,'').replace(',','.'));
+    if(isNaN(v)) return alert('Valor inválido.');
+    const total=Math.max(1,parseInt(nt)||1), parc=Math.min(total,Math.max(1,parseInt(np)||1));
+    await store.set('purchases',p.id,{...p,desc:desc.trim()||p.desc,value:v,total,startParcel:parc,startIdx:mi});
+  }
+});
+
+document.getElementById('fileImp').addEventListener('change',async e=>{
+  const file=e.target.files[0]; e.target.value=''; if(!file) return;
+  try{ await importar(file); }catch(err){ alert('Não consegui importar: '+err.message); }
+});
+
+document.addEventListener('submit',async e=>{
+  const f=e.target; if(!f.dataset.add) return;
+  e.preventDefault();
+  const v=parseFloat(f.value.value.replace(/\./g,'').replace(',','.'));
+  if(isNaN(v)) return alert('Valor inválido.');
+  const total=Math.max(1,parseInt(f.total.value)||1);
+  const parc=Math.min(total,Math.max(1,parseInt(f.parc.value)||1));
+  await store.add('purchases',{personId:curTab,card:f.dataset.add,desc:f.desc.value.trim(),value:v,total,startParcel:parc,startIdx:mi});
+});
+
+render();
+</script>
+</body>
+</html>
